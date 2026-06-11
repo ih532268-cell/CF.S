@@ -120,3 +120,13 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+tasks.register<Copy>("copyLogo") {
+  from("${rootDir}/assets/.aistudio/mipmap-xxxhdpi/ic_launcher.webp")
+  into("src/main/assets")
+  rename { "ic_cf_logo.webp" }
+}
+
+tasks.named("preBuild") {
+  dependsOn("copyLogo")
+}

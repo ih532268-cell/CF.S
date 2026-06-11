@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -205,12 +206,166 @@ fun ConfigManagerScreen(viewModel: ScannerViewModel) {
                 }
             }
         } else {
+            val generatedList by viewModel.generatedConfigs.collectAsState()
+
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .weight(1f),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Generated custom configs section
+                if (generatedList.isNotEmpty()) {
+                    item {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, Color(0xFFFF9800).copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = Loc.t("کانفیگ‌های نهایی بر اساس آی‌پی‌های نشان شده", "Compiled Tunnels (per Starred IP)", isEnglish),
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFFF9800)
+                                        )
+                                        Text(
+                                            text = Loc.t("تعداد تولید شده: ${generatedList.size} کانفیگ", "Compiled roster: ${generatedList.size} clean tunnels", isEnglish),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MutedSlate
+                                        )
+                                    }
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        // Copy All Links
+                                        IconButton(
+                                            onClick = {
+                                                val allTxt = generatedList.joinToString("\n") { it.configUri }
+                                                clipboardManager.setText(AnnotatedString(allTxt))
+                                                Toast.makeText(context, Loc.t("تمامی لینک‌های تولیدی کپی شدند!", "All compiled links copied!", isEnglish), Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .background(Color(0xFFFF9800).copy(alpha = 0.12f), CircleShape)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ContentCopy,
+                                                contentDescription = "Copy All Links",
+                                                tint = Color(0xFFFF8000),
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+
+                                        // Share all as Txt Payload
+                                        IconButton(
+                                            onClick = {
+                                                val allTxt = generatedList.joinToString("\n") { it.configUri }
+                                                try {
+                                                    val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                        type = "text/plain"
+                                                        putExtra(android.content.Intent.EXTRA_TEXT, allTxt)
+                                                    }
+                                                    context.startActivity(android.content.Intent.createChooser(shareIntent, Loc.t("خروجی کانفیگ‌ها بصورت متنی", "Export Tunnels TXT", isEnglish)))
+                                                } catch (ex: Exception) {
+                                                    ex.printStackTrace()
+                                                }
+                                            },
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .background(Color(0xFFFF9800).copy(alpha = 0.12f), CircleShape)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Share,
+                                                contentDescription = "Export TXT All",
+                                                tint = Color(0xFFFF8000),
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Divider(color = Color(0xFFFF9800).copy(alpha = 0.2f))
+
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    generatedList.take(15).forEach { item ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f))
+                                                .padding(8.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = item.name,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "${item.ip}:${item.port}",
+                                                    fontFamily = MonospaceFontFamily,
+                                                    fontSize = 10.sp,
+                                                    color = MutedSlate
+                                                )
+                                            }
+
+                                            IconButton(
+                                                onClick = {
+                                                    clipboardManager.setText(AnnotatedString(item.configUri))
+                                                    Toast.makeText(context, Loc.t("کپی شد", "Copied", isEnglish), Toast.LENGTH_SHORT).show()
+                                                },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.ContentCopy,
+                                                    contentDescription = "Copy Config",
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (generatedList.size > 15) {
+                                        Text(
+                                            text = Loc.t("... و ${generatedList.size - 15} کانفیگ نهایی دیگر", "... and ${generatedList.size - 15} more clean tunnels available", isEnglish),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MutedSlate,
+                                            modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Header for configuration bases
+                item {
+                    Text(
+                        text = Loc.t("لینک‌های کانفیگ پایه ثبت شده", "Registered Base Configurations", isEnglish),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+                    )
+                }
+
                 items(configsList, key = { it.id }) { config ->
                     ConfigItem(
                         config = config,

@@ -72,6 +72,92 @@ fun SavedIpsScreen(
 
         Divider(color = CyberCardBorder.copy(alpha = 0.5f))
 
+        // Manual IP Insertion Form Card
+        var manualIp by remember { mutableStateOf("") }
+        var manualPort by remember { mutableStateOf("443") }
+        var manualColo by remember { mutableStateOf("MANUAL") }
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f), RoundedCornerShape(12.dp)),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = Loc.t("ثبت دستی آی‌پی تمیز", "Add Manual Clean IP", isEnglish),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = manualIp,
+                        onValueChange = { manualIp = it.trim() },
+                        label = { Text(Loc.t("آی‌پی (IP)", "IP Address", isEnglish), fontSize = 11.sp) },
+                        modifier = Modifier.weight(1.5f),
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = MonospaceFontFamily, fontSize = 13.sp)
+                    )
+                    OutlinedTextField(
+                        value = manualPort,
+                        onValueChange = { manualPort = it.trim() },
+                        label = { Text(Loc.t("پورت", "Port", isEnglish), fontSize = 11.sp) },
+                        modifier = Modifier.weight(0.8f),
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = MonospaceFontFamily, fontSize = 13.sp)
+                    )
+                    OutlinedTextField(
+                        value = manualColo,
+                        onValueChange = { manualColo = it.trim() },
+                        label = { Text(Loc.t("دیتاسنتر", "Colo", isEnglish), fontSize = 11.sp) },
+                        modifier = Modifier.weight(0.9f),
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = MonospaceFontFamily, fontSize = 13.sp)
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        if (manualIp.isNotEmpty()) {
+                            val portInt = manualPort.toIntOrNull() ?: 443
+                            viewModel.saveIp(
+                                SavedIp(
+                                    ip = manualIp,
+                                    port = portInt,
+                                    colo = manualColo,
+                                    country = "Manual",
+                                    ping = 100.0,
+                                    dlSpeed = 10.0,
+                                    ulSpeed = 1.0,
+                                    jitter = 5.0,
+                                    score = 100.0,
+                                    timestamp = System.currentTimeMillis()
+                                )
+                            )
+                            manualIp = ""
+                            Toast.makeText(context, Loc.t("آی‌پی دستی ثبت شد و کانفیگ‌ها بازسازی شدند!", "Manual IP added and configs updated!", isEnglish), Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, Loc.t("لطفاً آدرس آی‌پی معتبر وارد کنید", "Please enter a valid IP address", isEnglish), Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(imageVector = Icons.Default.Add, contentDescription = "Add IP", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(Loc.t("ذخیره و بازسازی کانفیگ‌ها", "Save & Rebuild Configs", isEnglish), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            }
+        }
+
         if (savedList.isEmpty()) {
             Box(
                 modifier = Modifier

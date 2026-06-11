@@ -1,5 +1,6 @@
 package com.example.ui
 
+import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
@@ -11,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -22,7 +24,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -32,6 +37,19 @@ import androidx.compose.ui.unit.sp
 import com.example.network.ScanResult
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
+
+private fun getLeaderboardTxt(results: List<ScanResult>, isEnglish: Boolean): String {
+    val sb = java.lang.StringBuilder()
+    sb.append(if (isEnglish) "--- Cloudflare Clean Edge Leaderboard ---\n" else "--- جدول رده‌بندی لبه‌های تمیز کلادفلر ---\n")
+    sb.append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date()) + "\n\n")
+    sb.append(String.format("%-4s | %-18s | %-5s | %-4s | %-7s | %-12s | %-5s\n", "Rank", "IP", "Port", "Colo", "Ping", "Down Speed", "Score"))
+    sb.append("-------------------------------------------------------------------------\n")
+    results.forEachIndexed { idx, res ->
+        sb.append(String.format("#%-3d | %-18s | %-5d | %-4s | %-5dms | %-8.2fMbps | %.1f\n", 
+            idx + 1, res.ip, res.port, res.colo, res.medianLatency.toInt(), res.downloadSpeed, res.score))
+    }
+    return sb.toString()
+}
 
 @Composable
 fun DashboardScreen(
@@ -43,46 +61,163 @@ fun DashboardScreen(
     val terminalLogs by viewModel.terminalLogs.collectAsState()
     val liveResults by viewModel.liveResults.collectAsState()
     val isEnglish by viewModel.isEnglish.collectAsState()
+    val scanTimestamp by viewModel.scanTimestamp.collectAsState()
     val clipboardManager = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
-    Column(
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // App Header Banner
-        HeaderSection(viewModel = viewModel)
+        item {
+            HeaderSection(viewModel = viewModel)
+        }
 
         // HighTech Interactive HUD Visualizer
-        ScannerInteractiveHUD(isScanning = isScanning, viewModel = viewModel)
+        item {
+            ScannerInteractiveHUD(isScanning = isScanning, viewModel = viewModel)
+        }
 
         // Scan Action Control Center
-        ScanControlCard(
-            isScanning = isScanning,
-            scanState = scanState,
-            viewModel = viewModel
-        )
+        item {
+            val isPaused by viewModel.isPaused.collectAsState()
+            ScanControlCard(
+                isScanning = isScanning,
+                isPaused = isPaused,
+                scanState = scanState,
+                viewModel = viewModel
+            )
+        }
 
         // Live Scrolling Terminal Console
-        TerminalConsole(logs = terminalLogs, isEnglish = isEnglish)
+        item {
+            TerminalConsole(logs = terminalLogs, isEnglish = isEnglish)
+        }
 
-        // Top Scored Candidacy List
-        CandidacyList(
-            modifier = Modifier.weight(1f),
-            results = liveResults,
-            isScanning = isScanning,
-            isEnglish = isEnglish,
-            onSave = { viewModel.saveIp(it) },
-            onCopy = { ip ->
-                clipboardManager.setText(AnnotatedString(ip))
-            },
-            onRebuild = { ip, port ->
-                viewModel.rebuildConfigs(ip, port)
-                onNavigateToConfigs()
+        // Top Scored Leaderboard Table Card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = androidx.compose.foundation.BorderStroke(1.dp, CyberCardBorder.copy(alpha = 0.5f)),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = Loc.t("جدول رده‌بندی لبه‌های تمیز کشف شده", "Clean Edges Leaderboard", isEnglish),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            if (scanTimestamp.isNotEmpty()) {
+                                Text(
+                                    text = Loc.t("آخرین اسکن: $scanTimestamp", "Last Scan: $scanTimestamp", isEnglish),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFFFF9800),
+                                    fontFamily = MonospaceFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
+
+                        // Export Leaderboard Table as TXT File Share Trigger
+                        if (liveResults.isNotEmpty()) {
+                            IconButton(
+                                onClick = {
+                                    val txtData = getLeaderboardTxt(liveResults, isEnglish)
+                                    clipboardManager.setText(AnnotatedString(txtData))
+                                    Toast.makeText(context, Loc.t("جدول متنی در حافظه کپی شد", "Text table copied to clipboard", isEnglish), Toast.LENGTH_SHORT).show()
+
+                                    try {
+                                        val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(android.content.Intent.EXTRA_TEXT, txtData)
+                                        }
+                                        context.startActivity(android.content.Intent.createChooser(shareIntent, Loc.t("خروجی جدول رده‌بندی", "Export Leaderboard", isEnglish)))
+                                    } catch (ex: Exception) {
+                                        ex.printStackTrace()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = "Export TXT Table",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = Loc.t("کاندیداها بر طبق کمترین پکت لاس، پینگ و در نهایت بیشترین سرعت دانلود رتبه‌گیری می‌شوند.", "Candidates are ranked based on lowest packet loss, latency, and highest download speed.", isEnglish),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MutedSlate,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                    )
+
+                    if (liveResults.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(100.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CloudQueue,
+                                    contentDescription = "",
+                                    tint = MutedSlate.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(32.dp)
+                                )
+                                Text(
+                                    text = if (isScanning) Loc.t("در حال یافتن بهترین آی‌پی در میان رنج‌های لبه...", "Discovering top performance IPs across edge subnets...", isEnglish) else Loc.t("جدول کاندیداها خالی است. اسکن را آغاز کنید.", "Candidacy array is empty. Warm up edge scanners to fill.", isEnglish),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MutedSlate,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            liveResults.forEachIndexed { index, item ->
+                                CandidacyItem(
+                                    rank = index + 1,
+                                    res = item,
+                                    onSave = { viewModel.saveIp(item) },
+                                    onCopy = {
+                                        clipboardManager.setText(AnnotatedString(item.ip))
+                                        Toast.makeText(context, Loc.t("آی‌پی کپی شد", "IP copied to clipboard", isEnglish), Toast.LENGTH_SHORT).show()
+                                    },
+                                    onRebuild = {
+                                        viewModel.rebuildConfigs(item.ip, item.port)
+                                        Toast.makeText(context, Loc.t("تمام کانفیگ‌ها با این آی‌پی بازسازی شد!", "All configurations rebuilt with this IP!", isEnglish), Toast.LENGTH_SHORT).show()
+                                        onNavigateToConfigs()
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
             }
-        )
+        }
     }
 }
 
@@ -184,6 +319,7 @@ fun HeaderSection(viewModel: ScannerViewModel) {
 @Composable
 fun ScanControlCard(
     isScanning: Boolean,
+    isPaused: Boolean,
     scanState: ScanState,
     viewModel: ScannerViewModel
 ) {
@@ -207,12 +343,14 @@ fun ScanControlCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = if (isScanning) Loc.t("اسکنر در حال کار است...", "Scanner is running...", isEnglish) else Loc.t("شروع اسکن هوشمند شبکه", "Start Smart Scan", isEnglish),
+                    text = if (isScanning) Loc.t("اسکنر در حال کار است...", "Scanner is running...", isEnglish)
+                           else if (isPaused) Loc.t("اسکنر متوقف شده است", "Scanner is paused", isEnglish)
+                           else Loc.t("شروع اسکن هوشمند شبکه", "Start Smart Scan", isEnglish),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                if (!isScanning) {
+                if (!isScanning && !isPaused) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -350,12 +488,59 @@ fun ScanControlCard(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Action Buttons
+            // Action Buttons (Dynamic Pause/Resume controls)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (!isScanning) {
+                if (isScanning) {
+                    // 1. Active Scan Running -> Show Pause & Stop buttons
+                    Button(
+                        onClick = { viewModel.pauseScanning() },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = WarningAmber),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Pause, contentDescription = "", tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(Loc.t("توقف موقت", "Pause", isEnglish), color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+
+                    Button(
+                        onClick = { viewModel.stopScanning() },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Stop, contentDescription = "", tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(Loc.t("لغو اسکن", "Stop", isEnglish), color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                } else if (isPaused) {
+                    // 2. Scan is Paused -> Show Resume & Reset/Clear buttons
+                    Button(
+                        onClick = { viewModel.resumeScanning() },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "", tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(Loc.t("ادامه‌ی اسکن", "Resume", isEnglish), color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+
+                    Button(
+                        onClick = { viewModel.stopScanning() },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Refresh, contentDescription = "", tint = MaterialTheme.colorScheme.onSecondary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(Loc.t("انصراف و ریست", "Reset", isEnglish), color = MaterialTheme.colorScheme.onSecondary, fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    // 3. Fully Idle Standby -> Show standard Start Scan button
                     Button(
                         onClick = { viewModel.startScanning() },
                         modifier = Modifier.weight(1f),
@@ -366,17 +551,6 @@ fun ScanControlCard(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(Loc.t("شروع اسکن شبکه (Start)", "Start Scan", isEnglish), color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold)
                     }
-                } else {
-                    Button(
-                        onClick = { viewModel.stopScanning() },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Icon(imageVector = Icons.Default.Stop, contentDescription = "", tint = Color.White)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(Loc.t("توقف اسکن (Stop)", "Stop Scan", isEnglish), color = Color.White, fontWeight = FontWeight.Bold)
-                    }
                 }
             }
         }
@@ -386,6 +560,8 @@ fun ScanControlCard(
 @Composable
 fun TerminalConsole(logs: List<TerminalLog>, isEnglish: Boolean) {
     val listState = rememberLazyListState()
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     // Auto-scroll to lowest log item
     LaunchedEffect(logs.size) {
@@ -417,11 +593,41 @@ fun TerminalConsole(logs: List<TerminalLog>, isEnglish: Boolean) {
                     color = if (MaterialTheme.colorScheme.background == LightBackground) ElectricBlue else NeonCyan,
                     fontWeight = FontWeight.Bold
                 )
-                Box(
+                
+                // Orange Circular Icon & Copy Label Trigger
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier
-                        .size(8.dp)
-                        .background(if (MaterialTheme.colorScheme.background == LightBackground) ElectricBlue else NeonCyan, RoundedCornerShape(4.dp))
-                )
+                        .clickable {
+                            val logsText = logs.joinToString("\n") { "[${it.timestamp}] ${if (isEnglish) it.enText else it.faText}" }
+                            clipboardManager.setText(AnnotatedString(logsText))
+                            Toast.makeText(context, Loc.t("تمامی لاگ‌های ترمینال کپی شدند!", "All terminal logs copied to clipboard!", isEnglish), Toast.LENGTH_SHORT).show()
+                        }
+                        .background(Color(0xFFE65100).copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = Loc.t("کپی لاگ", "Copy Logs", isEnglish),
+                        fontSize = 9.sp,
+                        color = Color(0xFFFF9800),
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = MonospaceFontFamily
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(16.dp)
+                            .background(Color(0xFFFF9800), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Copy logs",
+                            tint = Color.White,
+                            modifier = Modifier.size(9.dp)
+                        )
+                    }
+                }
             }
 
             Divider(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), modifier = Modifier.padding(bottom = 8.dp))
@@ -463,79 +669,7 @@ fun TerminalConsole(logs: List<TerminalLog>, isEnglish: Boolean) {
     }
 }
 
-@Composable
-fun CandidacyList(
-    modifier: Modifier = Modifier,
-    results: List<ScanResult>,
-    isScanning: Boolean,
-    isEnglish: Boolean,
-    onSave: (ScanResult) -> Unit,
-    onCopy: (String) -> Unit,
-    onRebuild: (String, Int) -> Unit
-) {
-    Card(
-        modifier = modifier
-            .border(1.dp, CyberCardBorder.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = Loc.t("جدول رده‌بندی لبه‌های تمیز کشف شده", "Clean Edges Leaderboard", isEnglish),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = Loc.t("کاندیداها بر طبق کمترین پکت لاس، پینگ و در نهایت بیشترین سرعت دانلود رتبه‌گیری می‌شوند.", "Candidates are ranked based on lowest packet loss, latency, and highest download speed.", isEnglish),
-                style = MaterialTheme.typography.bodySmall,
-                color = MutedSlate,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
 
-            if (results.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CloudQueue,
-                            contentDescription = "",
-                            tint = MutedSlate.copy(alpha = 0.5f),
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Text(
-                            text = if (isScanning) Loc.t("در حال یافتن بهترین آی‌پی در میان رنج‌های لبه...", "Discovering top performance IPs across edge subnets...", isEnglish) else Loc.t("جدول کاندیداها خالی است. اسکن را آغاز کنید.", "Candidacy array is empty. Warm up edge scanners to fill.", isEnglish),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MutedSlate,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-            } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    itemsIndexed(results) { index, item ->
-                        CandidacyItem(
-                            rank = index + 1,
-                            res = item,
-                            onSave = { onSave(item) },
-                            onCopy = { onCopy(item.ip) },
-                            onRebuild = { onRebuild(item.ip, item.port) }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
 
 @Composable
 fun CandidacyItem(
@@ -703,6 +837,16 @@ fun CandidacyItem(
 @Composable
 fun ScannerInteractiveHUD(isScanning: Boolean, viewModel: ScannerViewModel) {
     val isEnglish by viewModel.isEnglish.collectAsState()
+    val context = LocalContext.current
+    val logoBitmap = remember(context) {
+        try {
+            context.assets.open("ic_cf_logo.webp").use { inputStream ->
+                android.graphics.BitmapFactory.decodeStream(inputStream)?.asImageBitmap()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
     val infiniteTransition = rememberInfiniteTransition(label = "ScanSweep")
     val sweepPosition by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -713,23 +857,32 @@ fun ScannerInteractiveHUD(isScanning: Boolean, viewModel: ScannerViewModel) {
         ),
         label = "SweepPosition"
     )
-    val radarRotation by infiniteTransition.animateFloat(
+    val logoRotation by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 4000, easing = LinearEasing),
+            animation = tween(durationMillis = 6000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "RadarRotation"
+        label = "LogoRotation"
     )
-    val blinkAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.2f,
-        targetValue = 1f,
+    val logoScale by infiniteTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.15f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1000, easing = LinearEasing),
+            animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "BlinkAlpha"
+        label = "LogoScale"
+    )
+    val logoAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.6f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "LogoAlpha"
     )
 
     val gridColorTheme = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
@@ -755,69 +908,6 @@ fun ScannerInteractiveHUD(isScanning: Boolean, viewModel: ScannerViewModel) {
             while (x < size.width) {
                 drawLine(gridColor, start = Offset(x, 0f), end = Offset(x, size.height), strokeWidth = 1f)
                 x += gridSpacing
-            }
-
-            // Radar elements (Concentric rings)
-            val centerX = size.width / 2f
-            val centerY = size.height / 2f
-            val maxRadarRadius = size.height * 0.45f
-            
-            val radarThemeColor = if (isScanning) SuccessGreen else MutedSlate.copy(alpha = 0.3f)
-
-            // 3 Concentric rings
-            drawCircle(
-                color = radarThemeColor.copy(alpha = 0.05f),
-                radius = maxRadarRadius * 0.35f,
-                center = Offset(centerX, centerY),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f)
-            )
-            drawCircle(
-                color = radarThemeColor.copy(alpha = 0.08f),
-                radius = maxRadarRadius * 0.7f,
-                center = Offset(centerX, centerY),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f)
-            )
-            drawCircle(
-                color = radarThemeColor.copy(alpha = 0.12f),
-                radius = maxRadarRadius,
-                center = Offset(centerX, centerY),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f)
-            )
-
-            // Radar crosshairs (Horizontal and vertical line segments)
-            drawLine(
-                color = radarThemeColor.copy(alpha = 0.1f),
-                start = Offset(centerX - maxRadarRadius - 10f, centerY),
-                end = Offset(centerX + maxRadarRadius + 10f, centerY),
-                strokeWidth = 1f
-            )
-            drawLine(
-                color = radarThemeColor.copy(alpha = 0.1f),
-                start = Offset(centerX, centerY - maxRadarRadius - 10f),
-                end = Offset(centerX, centerY + maxRadarRadius + 10f),
-                strokeWidth = 1f
-            )
-
-            // Dynamic rotating radar beam
-            if (isScanning) {
-                val angleRad = Math.toRadians(radarRotation.toDouble())
-                val endX = centerX + maxRadarRadius * Math.cos(angleRad).toFloat()
-                val endY = centerY + maxRadarRadius * Math.sin(angleRad).toFloat()
-
-                // Radar beam line
-                drawLine(
-                    color = SuccessGreen.copy(alpha = 0.6f),
-                    start = Offset(centerX, centerY),
-                    end = Offset(endX, endY),
-                    strokeWidth = 1.5.dp.toPx()
-                )
-
-                // Pulse core
-                drawCircle(
-                    color = SuccessGreen.copy(alpha = 0.15f * blinkAlpha),
-                    radius = maxRadarRadius,
-                    center = Offset(centerX, centerY)
-                )
             }
 
             // High-Tech Corner Brackets
@@ -863,6 +953,38 @@ fun ScannerInteractiveHUD(isScanning: Boolean, viewModel: ScannerViewModel) {
                     size = Size(size.width - padding * 2, 24.dp.toPx())
                 )
             }
+        }
+
+        // Center spinning / breathing logo representing the scanner animation using modern asset loading with 100% safety fallback!
+        if (logoBitmap != null) {
+            androidx.compose.foundation.Image(
+                bitmap = logoBitmap,
+                contentDescription = "CF Scanner App Logo Animation",
+                modifier = Modifier
+                    .size(72.dp)
+                    .align(Alignment.Center)
+                    .graphicsLayer {
+                        rotationZ = if (isScanning) logoRotation else 0f
+                        scaleX = if (isScanning) logoScale else 1.0f
+                        scaleY = if (isScanning) logoScale else 1.0f
+                        alpha = if (isScanning) logoAlpha else 1.0f
+                    }
+            )
+        } else {
+            androidx.compose.material3.Icon(
+                imageVector = androidx.compose.material.icons.Icons.Default.CloudQueue,
+                contentDescription = "CF Scanner Fallback Logo",
+                tint = if (isScanning) SuccessGreen else MutedSlate,
+                modifier = Modifier
+                    .size(72.dp)
+                    .align(Alignment.Center)
+                    .graphicsLayer {
+                        rotationZ = if (isScanning) logoRotation else 0f
+                        scaleX = if (isScanning) logoScale else 1.0f
+                        scaleY = if (isScanning) logoScale else 1.0f
+                        alpha = if (isScanning) logoAlpha else 1.0f
+                    }
+            )
         }
 
         val hudGreen = if (MaterialTheme.colorScheme.background == LightBackground) ElectricBlue else SuccessGreen

@@ -1,5 +1,5 @@
 {
-  "name": "CF Elite Scanner",
+  "name": "CF Scanner",
   "description": "A high-precision Cloudflare Edge Clean IP scanner tailored for mobile users with low-level socket handshakes, real-time speed benchmarks, other network tools, and a built-in V2Ray (VLESS/VMESS/Trojan) URI configuration rebuilder.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

@@ -36,6 +36,14 @@ data class TerminalLog(
     val enText: String
 )
 
+data class GeneratedConfig(
+    val name: String,
+    val sourceBaseName: String,
+    val ip: String,
+    val port: Int,
+    val configUri: String
+)
+
 sealed class ScanState {
     object Idle : ScanState()
     data class Stage1PortScan(val checked: Int, val total: Int, val foundActive: Int) : ScanState()
@@ -48,24 +56,24 @@ class ScannerViewModel(application: Application) : AndroidViewModel(application)
     private val db = AppDatabase.getDatabase(application)
     private val repository = ScannerRepository(db)
 
+    private val _generatedConfigs = MutableStateFlow<List<GeneratedConfig>>(emptyList())
+    val generatedConfigs: StateFlow<List<GeneratedConfig>> = _generatedConfigs.asStateFlow()
+
+    private val _scanTimestamp = MutableStateFlow("")
+    val scanTimestamp: StateFlow<String> = _scanTimestamp.asStateFlow()
+
     // DB Flows
     val savedIps = repository.savedIps.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val configBases = repository.configBases.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val scanHistory = repository.scanHistory.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val scanRanges = repository.scanRanges.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // UI & Active Scanner States
-    private val _scanState = MutableStateFlow<ScanState>(ScanState.Idle)
-    val scanState: StateFlow<ScanState> = _scanState.asStateFlow()
-
-    private val _isScanning = MutableStateFlow(false)
-    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
-
-    private val _terminalLogs = MutableStateFlow<List<TerminalLog>>(emptyList())
-    val terminalLogs: StateFlow<List<TerminalLog>> = _terminalLogs.asStateFlow()
-
-    private val _liveResults = MutableStateFlow<List<ScanResult>>(emptyList())
-    val liveResults: StateFlow<List<ScanResult>> = _liveResults.asStateFlow()
+    // UI & Active Scanner States (Delegated directly to Thread-safe ScannerManager)
+    val scanState: StateFlow<ScanState> = ScannerManager.scanState
+    val isScanning: StateFlow<Boolean> = ScannerManager.isScanning
+    val terminalLogs: StateFlow<List<TerminalLog>> = ScannerManager.terminalLogs
+    val liveResults: StateFlow<List<ScanResult>> = ScannerManager.liveResults
+    val isPaused: StateFlow<Boolean> = ScannerManager.isPaused
 
     // Settings States
     val portsConfig = MutableStateFlow("443,2053,2083,2087,2096,8443")
@@ -87,231 +95,63 @@ class ScannerViewModel(application: Application) : AndroidViewModel(application)
         isEnglish.value = !isEnglish.value
     }
 
-    private var scanJob: kotlinx.coroutines.Job? = null
-
     init {
+        ScannerManager.initialize(application)
+        
         viewModelScope.launch {
             repository.initDefaultRangesIfNeeded()
         }
+        
+        // Listen to ScannerManager's scanState. When it reaches Finished, trigger a rebuild or database sync!
+        viewModelScope.launch {
+            ScannerManager.scanState.collect { state ->
+                if (state is ScanState.Finished) {
+                    rebuildWithSavedIps()
+                }
+            }
+        }
     }
 
-    private val logLock = Any()
-
     fun addLog(fa: String, en: String) {
-        synchronized(logLock) {
-            val timeStamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            val currentLogs = _terminalLogs.value
-            val newLog = TerminalLog(timeStamp, fa, en)
-            val updatedLogs = if (currentLogs.size >= 500) {
-                currentLogs.drop(currentLogs.size - 499) + newLog
-            } else {
-                currentLogs + newLog
-            }
-            _terminalLogs.value = updatedLogs
-        }
+        ScannerManager.addLog(fa, en)
     }
 
     fun addLog(msg: String) {
-        addLog(msg, msg)
+        ScannerManager.addLog(msg, msg)
     }
 
     fun clearLogs() {
-        synchronized(logLock) {
-            _terminalLogs.value = emptyList()
-        }
+        ScannerManager.clearLogs()
     }
 
     fun startScanning() {
-        if (_isScanning.value) return
-        _isScanning.value = true
-        _liveResults.value = emptyList()
-        clearLogs()
-
-        addLog("🚀 شروع اسکنر کلادفلر...", "🚀 Starting Cloudflare Scanner...")
-        addLog("🛠️ پیکربندی بافرهای شبکه و محیط SSL...", "🛠️ Configuring Network Buffers & SSL Context...")
-
-        scanJob = viewModelScope.launch(Dispatchers.Default) {
-            try {
-                // 1. Gather all active ranges
-                val ranges = repository.scanRanges.first().filter { it.isEnabled }
-                if (ranges.isEmpty()) {
-                    addLog("❌ خطا: هیچ رنج آی‌پی در تنظیمات فعال نشده است!", "❌ Error: No IP Ranges are selected/enabled in Settings!")
-                    _isScanning.value = false
-                    _scanState.value = ScanState.Idle
-                    return@launch
-                }
-
-                addLog("📂 محاسبه‌ی محدوده کل پورت‌های هدف...", "📂 Calculating total target search space...")
-
-                val portsList = portsConfig.value.split(",")
-                    .mapNotNull { it.trim().toIntOrNull() }
-                    .ifEmpty { listOf(443) }
-
-                val sampling = samplePerCidr.value
-                var totalTargets = 0
-                ranges.forEach { range ->
-                    totalTargets += CidrUtils.countIps(range.cidr, sampling) * portsList.size
-                }
-
-                if (totalTargets == 0) {
-                    addLog("❌ خطا: هیچ آدرس کاندیدی تولید نشد. رنج‌های CIDR را بررسی کنید!", "❌ Error: Could not generate any candidate IPs. Check CIDRs!")
-                    _isScanning.value = false
-                    _scanState.value = ScanState.Idle
-                    return@launch
-                }
-
-                addLog("📋 کل کانال‌های سوکت هدف برای اسکن: $totalTargets", "📋 Total Target Sockets to scan: $totalTargets")
-                addLog("🔎 مرحله ۱: بررسی بست آدرس‌های لبه فعال روی پورت‌های $portsList", "🔎 Step 1: Active Port Checking on ports $portsList")
-
-                _scanState.value = ScanState.Stage1PortScan(0, totalTargets, 0)
-
-                // Run concurrent Stage 1 checking using highly optimized backpressured Channel pool
-                val activeList = java.util.Collections.synchronizedList(mutableListOf<Pair<String, Int>>())
-                var checkedCount = 0
-
-                // Backpressured queue to prevent OutOfMemory on huge subnets
-                val channel = Channel<Pair<String, Int>>(capacity = 1000)
-
-                // Populate channel dynamically range-by-range
-                val producerJob = launch(Dispatchers.Default) {
-                    try {
-                        ranges.forEach { range ->
-                            val list = CidrUtils.generateIpsFromCidr(range.cidr, sampling)
-                            list.forEach { ip ->
-                                portsList.forEach { port ->
-                                    channel.send(Pair(ip, port))
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    } finally {
-                        channel.close()
-                    }
-                }
-
-                val workerCount = minOf(concurrencyLimit.value, totalTargets).coerceAtLeast(1)
-                val stage1Jobs = List(workerCount) {
-                    async {
-                        for (target in channel) {
-                            try {
-                                val active = ScannerEngine.checkPort(target.first, target.second, timeoutMs.value)
-                                var currentChecked = 0
-                                var currentActiveSize = 0
-                                synchronized(activeList) {
-                                    checkedCount++
-                                    currentChecked = checkedCount
-                                    if (active) {
-                                        activeList.add(target)
-                                    }
-                                    currentActiveSize = activeList.size
-                                }
-                                if (currentChecked % 10 == 0 || currentChecked == totalTargets || active) {
-                                    _scanState.value = ScanState.Stage1PortScan(currentChecked, totalTargets, currentActiveSize)
-                                }
-                                if (active) {
-                                    addLog("🟢 آی‌پی پاسخگو در ${target.first}:${target.second}", "🟢 Edge alive on ${target.first}:${target.second}")
-                                }
-                            } catch (ex: Exception) {
-                                ex.printStackTrace()
-                            }
-                        }
-                    }
-                }
-
-                stage1Jobs.awaitAll()
-                producerJob.join()
-
-                val aliveResultList = synchronized(activeList) { activeList.toList() }
-
-                addLog("✅ مرحله ۱ پایان یافت. ${aliveResultList.size} گره‌ی فعال پاسخگو پیدا شد!", "✅ Stage 1 Complete. Found ${aliveResultList.size} responsive Edge Nodes!")
-
-                if (aliveResultList.isEmpty()) {
-                    addLog("⚠️ هیچ سرور فعالی پاسخ نداد. پورت یا آی‌پی‌های تستی دیگر را امتحان کنید.", "⚠️ No active CDNs verified. Try higher timeouts or other ranges.")
-                    _isScanning.value = false
-                    _scanState.value = ScanState.Idle
-                    return@launch
-                }
-
-                // 2. Stage 2 Benchmarking (to avoid bandwidth skew, we run them sequentially/tight concurrency)
-                addLog("⚡ مرحله ۲: ارزیابی و امتیازدهی نهایی (پینگ، لرزش پکت خروجی و عیارسنجی سرعت)...", "⚡ Stage 2: Deep Benchmarking (Ping, TLS Handshaking, Jitter, Speed)...")
-                val finalCheckedList = mutableListOf<ScanResult>()
-                _scanState.value = ScanState.Stage2Benchmark("", 0, aliveResultList.size)
-
-                for (idx in aliveResultList.indices) {
-                    val target = aliveResultList[idx]
-                    _scanState.value = ScanState.Stage2Benchmark("${target.first}:${target.second}", idx + 1, aliveResultList.size)
-                    addLog("⚙️ ارزیابی کیفیت ${target.first}:${target.second} (${idx + 1}/${aliveResultList.size})...", "⚙️ Profiling ${target.first}:${target.second} (${idx + 1}/${aliveResultList.size})...")
-
-                    val result = ScannerEngine.benchmarkIp(
-                        ip = target.first,
-                        port = target.second,
-                        timeoutMs = timeoutMs.value,
-                        benchDurationSeconds = benchDurationSeconds.value,
-                        jitterSamples = jitterSamples.value,
-                        ignoreCert = ignoreCert.value,
-                        onProgress = { phase ->
-                            val faPhrase = when {
-                                phase.contains("Handshaking") -> "اتصال امن TLS..."
-                                phase.contains("Trace") -> "دریافت اطلاعات هدر لبه..."
-                                phase.contains("Jitter") -> "بررسی پکت لاس و جیتر..."
-                                phase.contains("Download") -> "تست سرعت دانلود..."
-                                phase.contains("Upload") -> "تست سرعت آپلود..."
-                                else -> phase
-                            }
-                            addLog("   📊 $faPhrase", "   📊 $phase")
-                        }
-                    )
-
-                    if (result != null) {
-                        if (result.timeoutRatio > maxLossRatio.value) {
-                            addLog("   ❌ رد شد: درصد تلفات پکت بسیار بالا است (${(result.timeoutRatio * 100).toInt()}%).", "   ❌ Rejected: Packet Loss too high (${(result.timeoutRatio * 100).toInt()}%).")
-                            continue
-                        }
-                        synchronized(finalCheckedList) {
-                            finalCheckedList.add(result)
-                            finalCheckedList.sortByDescending { it.score }
-                            _liveResults.value = finalCheckedList.toList()
-                        }
-                        addLog("   ⭐ موفقیت‌آمیز! سرعت: ${result.downloadSpeed} مگابیت | امتیاز: ${result.score} | دیتاسنتر: ${result.colo}", "   ⭐ Success! Speed: ${result.downloadSpeed} Mbps | Score: ${result.score} | Colo: ${result.colo}")
-                    } else {
-                        addLog("   ❌ خطا: سرور لبه نبود یا هدر لازم از سمت کلادفلر بازگشت داده نشد.", "   ❌ Profiling failed or CDN header check invalid.")
-                    }
-                }
-
-                addLog("   🏁 عملیات ارزیابی با موفقیت به پایان رسید! ${finalCheckedList.size} مپ‌رنج پاسخگو ثبت شد.", "🏁 Scanning Complete! ${finalCheckedList.size} nodes successfully scored.")
-                _scanState.value = ScanState.Finished
-
-                // Insert into scan history if we have results
-                if (finalCheckedList.isNotEmpty()) {
-                    val best = finalCheckedList.first()
-                    repository.insertHistory(
-                        ScanHistory(
-                            totalScanned = totalTargets,
-                            activeRanges = ranges.joinToString(", ") { it.cidr },
-                            bestIp = best.ip,
-                            bestPing = best.medianLatency,
-                            bestSpeed = best.downloadSpeed,
-                            bestScore = best.score
-                        )
-                    )
-                }
-
-            } catch (e: Exception) {
-                addLog("❌ خطای سیستمی: ${e.message}", "❌ Fatal Error: ${e.message}")
-                e.printStackTrace()
-            } finally {
-                _isScanning.value = false
-            }
+        viewModelScope.launch {
+            val ranges = repository.scanRanges.first()
+            ScannerManager.startScan(
+                cidrRanges = ranges,
+                ports = portsConfig.value,
+                sampling = samplePerCidr.value,
+                timeoutMs = timeoutMs.value,
+                benchSec = benchDurationSeconds.value,
+                jitter = jitterSamples.value,
+                maxLoss = maxLossRatio.value,
+                ignoreCert = ignoreCert.value,
+                concurrency = concurrencyLimit.value,
+                isEng = isEnglish.value
+            )
         }
     }
 
+    fun pauseScanning() {
+        ScannerManager.pauseScan()
+    }
+
+    fun resumeScanning() {
+        ScannerManager.resumeScan()
+    }
+
     fun stopScanning() {
-        if (!_isScanning.value) return
-        addLog("🛑 متوقف کردن عملیات اسکن فعال...", "🛑 Terminating scan...")
-        scanJob?.cancel()
-        _isScanning.value = false
-        _scanState.value = ScanState.Idle
+        ScannerManager.stopScan()
     }
 
     // IP Management
@@ -331,18 +171,29 @@ class ScannerViewModel(application: Application) : AndroidViewModel(application)
                 )
             )
             addLog("💾 آی‌پی تمیز ${res.ip} در لیست نشان‌شده ذخیره شد.", "💾 Clean IP ${res.ip} saved to favorites database.")
+            rebuildWithSavedIps()
+        }
+    }
+
+    fun saveIp(saved: SavedIp) {
+        viewModelScope.launch {
+            repository.insertSavedIp(saved)
+            addLog("💾 آی‌پی دستی ${saved.ip} در لیست نشان‌شده ذخیره شد.", "💾 Manual IP ${saved.ip} saved to favorites database.")
+            rebuildWithSavedIps()
         }
     }
 
     fun deleteSavedIp(saved: SavedIp) {
         viewModelScope.launch {
             repository.deleteSavedIp(saved)
+            rebuildWithSavedIps()
         }
     }
 
     fun clearSavedIps() {
         viewModelScope.launch {
             repository.clearSavedIps()
+            _generatedConfigs.value = emptyList()
         }
     }
 
@@ -350,12 +201,53 @@ class ScannerViewModel(application: Application) : AndroidViewModel(application)
     fun addConfigBase(name: String, rawUri: String) {
         viewModelScope.launch {
             repository.insertConfigBase(ConfigBase(name = name, rawUri = rawUri))
+            rebuildWithSavedIps()
         }
     }
 
     fun deleteConfigBase(config: ConfigBase) {
         viewModelScope.launch {
             repository.deleteConfigBase(config)
+            rebuildWithSavedIps()
+        }
+    }
+
+    fun rebuildWithSavedIps() {
+        viewModelScope.launch {
+            val bases = repository.configBases.first()
+            val saved = repository.savedIps.first()
+            if (bases.isEmpty() || saved.isEmpty()) {
+                _generatedConfigs.value = emptyList()
+                return@launch
+            }
+            
+            val list = mutableListOf<GeneratedConfig>()
+            bases.forEach { base ->
+                saved.forEach { ipState ->
+                    val rebuilt = ConfigRebuilder.modifyUriWithCleanIp(base.rawUri, ipState.ip, ipState.port)
+                    if (rebuilt != null) {
+                        list.add(GeneratedConfig(
+                            name = "${base.name} - ${ipState.colo}",
+                            sourceBaseName = base.name,
+                            ip = ipState.ip,
+                            port = ipState.port,
+                            configUri = rebuilt
+                        ))
+                    }
+                }
+            }
+            _generatedConfigs.value = list
+
+            // Update database configs lastCleanUri with the best IP if available
+            val bestSaved = saved.firstOrNull()
+            if (bestSaved != null) {
+                bases.forEach { base ->
+                    val rebuilt = ConfigRebuilder.modifyUriWithCleanIp(base.rawUri, bestSaved.ip, bestSaved.port)
+                    if (rebuilt != null) {
+                        repository.updateConfigBase(base.copy(lastCleanUri = rebuilt))
+                    }
+                }
+            }
         }
     }
 
@@ -374,6 +266,7 @@ class ScannerViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
             addLog("✅ بازسازی تکمیل شد. لینک‌های جدید را در کارت‌های تنظیمات ببینید!", "✅ Rebuilt complete. View links on the Configuration screen!")
+            rebuildWithSavedIps()
         }
     }
 
